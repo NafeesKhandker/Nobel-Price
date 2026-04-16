@@ -1,0 +1,137 @@
+---
+title: "Assignment 10B Nobel Prize"
+author: "Khandker Qaiduzzaman"
+format: html
+editor: visual
+---
+
+# Objective
+
+The goal of this assignment is to use the Nobel Prize API to retrieve JSON data, transform it into tidy data frames in R, and explore the dataset to answer four data-driven questions.
+
+------------------------------------------------------------------------
+
+# Approach
+
+This analysis focuses on retrieving structured JSON data from the Nobel Prize API, transforming it into tidy data using `tidyverse` principles, and preparing it for exploratory data analysis.
+
+------------------------------------------------------------------------
+
+## Step 1: Data Collection Using Nobel Prize API
+
+The dataset is obtained from the [Nobel Prize Developer Zone](https://www.nobelprize.org/organization/developer-zone-2/), which provides structured JSON data on Nobel laureates and prize awards.
+
+Two endpoints are used:
+
+-   **Laureates Endpoint:** contains personal information such as name, gender, birth date, and country of birth\
+-   **Prizes Endpoint:** contains award-level information such as year, category, and prize details
+
+The data is retrieved in JSON format and converted into R data frames for further processing.
+
+------------------------------------------------------------------------
+
+## Step 2: JSON Structure and Data Preparation
+
+The JSON data is parsed using the `jsonlite` package with `flatten = TRUE` to partially simplify nested structures.
+
+However, the datasets still contain complex nested components such as: - List-columns (e.g., `nobelPrizes`, `laureates`, `links`) - Nested identifiers inside sub-structures - Hierarchical fields generated from JSON paths (e.g., `birth.place.country.en`)
+
+Initial inspection using `head()` and `glimpse()` is used to understand:
+
+\- Variable structure\
+- Key identifiers (especially `id`)\
+- Fields required for analysis (country, year, category)
+
+Further data wrangling such as unnesting and restructuring will be required in later stages before analysis.
+
+------------------------------------------------------------------------
+
+## Data Analysis Workflow
+
+The workflow begins by retrieving JSON data from the Nobel Prize API and converting it into data frames.
+
+Next, both datasets are explored to understand their structure and nesting behavior. The laureates dataset contains individual-level data, while the prizes dataset contains award-level data with embedded laureate information.
+
+Since the data is not structured in a traditional relational format, joins require extracting nested identifiers (such as `id`) from list-columns rather than relying on a simple shared key.
+
+After restructuring, the datasets will be combined to enable comparative and longitudinal analysis.
+
+Finally, the cleaned dataset will be used to answer four research questions involving grouping, filtering, time trends, and cross-variable comparisons.
+
+------------------------------------------------------------------------
+
+## Research Questions
+
+The following four questions will guide the analysis. The questions are designed to balance interpretability and analytical depth while remaining feasible using the Nobel Prize API structure.
+
+------------------------------------------------------------------------
+
+### 1. How has the number of Nobel Prizes awarded changed over time across different categories?
+
+This question examines historical trends in Nobel Prize distribution and compares how awards have evolved across major categories such as Physics, Chemistry, Medicine, Literature, and Peace. It helps identify whether certain fields have become more prominent over time.
+
+------------------------------------------------------------------------
+
+### 2. What is the distribution of age at the time of receiving a Nobel Prize across different categories?
+
+This question investigates whether laureates in different fields tend to receive the Nobel Prize at different stages of life. Age will be derived using birth year and award year, and summarized by category.
+
+------------------------------------------------------------------------
+
+### 3. Which countries have produced the most Nobel laureates, and how does this compare between birth country and award affiliation country?
+
+This question explores geographic distribution of Nobel laureates using two perspectives: the country of birth and the country associated with their affiliation at the time of the award. This allows for a comparison of national contribution versus institutional recognition.
+
+------------------------------------------------------------------------
+
+### 4. Which Nobel laureates have won prizes in multiple categories?
+
+This question identifies individuals who have received Nobel Prizes in more than one category. It requires grouping and filtering across the joined dataset and highlights rare cases of cross-disciplinary recognition.
+
+------------------------------------------------------------------------
+
+## Anticipated Challenges
+
+Several challenges are expected when working with this dataset:
+
+-   JSON data contains deeply nested structures requiring flattening and unnesting using `tidyverse` tools such as `unnest_longer()` and `unnest_wider()`
+-   The dataset does not follow a traditional relational database structure; joins must be constructed using nested identifiers (e.g., extracting `id` from embedded lists)
+-   Some fields contain missing or inconsistent values (e.g., unknown countries or incomplete birth information)
+-   Column names are generated from nested JSON paths, resulting in long and complex variable names
+-   List-columns such as `links` and `laureates` require additional processing before analysis
+
+------------------------------------------------------------------------
+
+## Example API Implementation (Nobel Prize API)
+
+```{r}
+# Load libraries
+library(jsonlite)
+library(tibble)
+library(gt)
+
+# Retrieve Laureates data
+laureates_df <- fromJSON(
+  "https://api.nobelprize.org/2.1/laureates",
+  flatten = TRUE
+)$laureates
+
+# Retrieve Prizes data
+prizes_df <- fromJSON(
+  "https://api.nobelprize.org/2.1/nobelPrizes",
+  flatten = TRUE
+)$nobelPrizes
+
+# Convert to tibble
+laureates_df <- as_tibble(laureates_df)
+prizes_df <- as_tibble(prizes_df)
+
+# Preview data
+laureates_df |> 
+  head(n = 2) |> 
+  gt()
+
+prizes_df |>
+  head(n = 2) |> 
+  gt()
+```
