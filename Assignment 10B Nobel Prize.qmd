@@ -108,23 +108,52 @@ Several challenges are expected when working with this dataset:
 # Load libraries
 library(jsonlite)
 library(tibble)
+library(dplyr)
 library(gt)
 
-# Retrieve Laureates data
-laureates_df <- fromJSON(
-  "https://api.nobelprize.org/2.1/laureates",
-  flatten = TRUE
-)$laureates
+get_page <- function(url) {
+  tryCatch({
+    fromJSON(url, flatten = TRUE)
+  }, error = function(e) {
+    return(NULL)
+  })
+}
 
-# Retrieve Prizes data
-prizes_df <- fromJSON(
-  "https://api.nobelprize.org/2.1/nobelPrizes",
-  flatten = TRUE
-)$nobelPrizes
+laureates_list <- list()
+offset <- 0
+limit <- 100
 
-# Convert to tibble
-laureates_df <- as_tibble(laureates_df)
-prizes_df <- as_tibble(prizes_df)
+repeat {
+  url <- paste0(
+    "https://api.nobelprize.org/2.1/laureates",
+    "?limit=", limit,
+    "&offset=", offset
+  )
+  res <- get_page(url)
+  if (is.null(res) || length(res$laureates) == 0) break
+  laureates_list[[length(laureates_list) + 1]] <- res$laureates
+  offset <- offset + limit
+}
+
+laureates_df <- bind_rows(laureates_list)
+
+
+prizes_list <- list()
+offset <- 0
+limit <- 100
+
+repeat {
+  url <- paste0(
+    "https://api.nobelprize.org/2.1/nobelPrizes",
+    "?limit=", limit,
+    "&offset=", offset
+  )
+  res <- get_page(url)
+  if (is.null(res) || length(res$nobelPrizes) == 0) break
+  prizes_list[[length(prizes_list) + 1]] <- res$nobelPrizes
+  offset <- offset + limit
+}
+prizes_df <- bind_rows(prizes_list)
 
 # Preview data
 laureates_df |> 
@@ -135,3 +164,286 @@ prizes_df |>
   head(n = 2) |> 
   gt()
 ```
+
+## Data Cleaning & Preparation (Core Step for All Questions)
+
+### Goal
+
+-   Create a tidy, analysis-ready dataset where:
+-   Each row = one laureate–one prize
+-   Includes:
+    -   id
+    -   year
+    -   category
+    -   birth_year
+    -   birth_country
+    -   affiliation_country
+
+### Step 1: Clean `laureates_df`
+
+`nobelPrizes` is a list-column, must be unnested.
+
+```{r}
+library(tidyverse)
+library(tidyr)
+
+laureates_clean <- laureates_df %>%
+  select(
+    id,
+    given_name = givenName.en,
+    family_name = familyName.en,
+    known_name = knownName.en,
+    birth_year = birth.year,
+    birth_country = birth.place.country.en,
+    nobelPrizes
+  ) %>%
+  unnest_longer(nobelPrizes) %>%
+  unnest_wider(nobelPrizes) %>%
+  mutate(
+    awardYear = as.numeric(awardYear),
+    category = category.en,
+    
+    # SAFE full name creation
+    fullName = coalesce(
+      known_name,
+      paste(given_name, family_name)
+    )
+  ) %>%
+  
+  select(
+    id,
+    fullName,
+    awardYear,
+    category,
+    birth_year,
+    birth_country
+  )
+```
+
+### Step 2: Extract Affiliation Country
+
+Affiliations are deeply nested inside `affiliations`, need careful extraction.
+
+```{r}
+library(tidyverse)
+
+laureates_affiliation <- laureates_df %>%
+  select(id, nobelPrizes) %>%
+  unnest_longer(nobelPrizes) %>%
+  unnest_wider(nobelPrizes) %>%
+  # Expand affiliations
+  unnest_longer(affiliations, keep_empty = TRUE) %>%
+  unnest_wider(affiliations) %>%
+  mutate(
+    awardYear = as.numeric(awardYear)
+  ) %>%
+  # KEY: expand country list properly
+  unnest_longer(country.en, keep_empty = TRUE) %>%
+  rename(affiliation_country = country.en) %>%
+  select(id, awardYear, affiliation_country)
+
+laureates_affiliation_clean <- laureates_affiliation %>%
+  # Clean whitespace
+  mutate(affiliation_country = str_trim(affiliation_country)) %>%
+  # Remove duplicate country per laureate-year
+  distinct(id, awardYear, affiliation_country)
+```
+
+### Step 3: Merge Affiliation with Laureates
+
+```{r}
+laureates_full <- laureates_clean %>%
+  left_join(laureates_affiliation_clean,
+            by = c("id", "awardYear"))
+```
+
+### Step 4: Clean prizes_df
+
+We only need structured fields here:
+
+```{r}
+library(tidyverse)
+library(tidyr)
+
+prize_laureates <- prizes_df %>%
+  mutate(
+    awardYear = as.numeric(awardYear),
+    category = category.en
+  ) %>%
+  select(awardYear, category, laureates) %>%
+  unnest_longer(laureates) %>%
+  unnest_wider(laureates)
+
+prize_laureates_clean <- prize_laureates %>%
+  select(id, awardYear, category)
+```
+
+### Step 5: Join leaureates and prizes datasets
+
+```{r}
+final_joined <- laureates_full %>%
+  left_join(prize_laureates_clean,
+            by = c("id", "awardYear", "category"))
+head(final_joined)
+```
+
+## Research Question 1: How has the number of Nobel Prizes awarded changed over time across different categories?
+
+The visualization shows clear differences in how Nobel Prize awards evolve across categories over time. Overall, there is an increase in the number of laureates per year in later decades, reflecting the growth of global research activity and the expansion of award structures. Physics and Physiology or Medicine show the most variation and higher counts in recent years, suggesting a shift toward collaborative, team-based discoveries. Chemistry follows a more stable pattern with steady growth and fewer extreme fluctuations compared to Physics and Medicine.
+
+Economic Sciences appears only in the late 20th century and shows a gradual upward trend with relatively consistent awarding patterns, reflecting its newer establishment as a Nobel category. In contrast, Literature and Peace remain relatively stable over time, typically awarding one laureate or small groups each year with limited variation. Overall, the plot highlights a clear divide between scientific fields, which are becoming more collaborative and variable, and non-scientific fields, which remain comparatively steady and individual-focused.
+
+```{r}
+library(ggplot2)
+
+prize_trends <- prize_laureates_clean %>%
+  group_by(awardYear, category) %>%
+  summarise(n_laureates = n_distinct(id), .groups = "drop")
+
+ggplot(prize_trends, aes(x = awardYear, y = n_laureates, fill = category)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~category, scales = "free_y") +
+  labs(
+    title = "Nobel Laureates Over Time by Category",
+    x = "Year",
+    y = "Number of Laureates"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold"),
+    strip.text = element_text(face = "bold")
+  )
+```
+
+## Research Question 2: What is the distribution of age at the time of receiving a Nobel Prize across different categories?
+
+The age distribution shows that the lowest median for winning Nobel prize is for Physics, followed by Chemistry. Physiology or Medicine also has median age close to 55. Chemistry and Peace shows several outliers, which is an interesting finding.
+
+```{r}
+library(tidyverse)
+
+laureates_age <- laureates_full %>%
+  mutate(
+    birth_year = as.numeric(birth_year),
+    awardYear = as.numeric(awardYear),
+    age = awardYear - birth_year
+  ) %>%
+  filter(!is.na(age), age > 0, age < 120)
+
+ggplot(laureates_age, aes(x = category, y = age, fill = category)) +
+  geom_boxplot(alpha = 0.7, outlier.color = "red") +
+  geom_jitter(width = 0.2, alpha = 0.4, size = 1) +
+  stat_summary(fun = median, geom = "point", size = 3, color = "black") +
+  labs(
+    title = "Distribution of Age at Nobel Prize Award by Category",
+    x = "Category",
+    y = "Age at Award (years)"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 30, hjust = 1),
+    plot.title = element_text(face = "bold")
+  )
+```
+
+## Research Question 3: Which countries have produced the most Nobel laureates, and how does this compare between birth country and affiliation country?
+
+USA has the highest Nobel price winner both as birth and affiliation country, follower by UK and Germany. USA, UK, Switzerland, and Denmark has was listed more as affiliation country than birth country.
+
+```{r}
+library(tidyverse)
+
+birth_country <- laureates_full %>%
+  filter(!is.na(birth_country)) %>%
+  group_by(birth_country) %>%
+  summarise(n_birth = n_distinct(id), .groups = "drop") %>%
+  arrange(desc(n_birth)) %>%
+  slice_head(n = 10)
+
+affiliation_country <- laureates_full %>%
+  filter(!is.na(affiliation_country)) %>%
+  separate_rows(affiliation_country, sep = ",\\s*") %>%
+  group_by(affiliation_country) %>%
+  summarise(n_affiliation = n_distinct(id), .groups = "drop") %>%
+  arrange(desc(n_affiliation)) %>%
+  slice_head(n = 10)
+
+birth_country2 <- birth_country %>%
+  rename(country = birth_country, count = n_birth) %>%
+  mutate(type = "Birth Country")
+
+affiliation_country2 <- affiliation_country %>%
+  rename(country = affiliation_country, count = n_affiliation) %>%
+  mutate(type = "Affiliation Country")
+
+country_compare <- bind_rows(birth_country2, affiliation_country2)
+
+ggplot(country_compare, aes(x = reorder(country, count), y = count, fill = type)) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  labs(
+    title = "Top Countries Producing Nobel Laureates: Birth vs Affiliation",
+    x = "Country",
+    y = "Number of Laureates",
+    fill = "Country Type"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold")
+  )
+```
+
+### Research Question 4: Which Nobel laureates have won prizes in multiple categories?
+
+There was only two Nobel laureates, Marie Curie and Linus Pauling, who won in highest two categories in their lifetime.
+
+```{r}
+library(tidyverse)
+
+multi_category_laureates <- prize_laureates_clean %>%
+  group_by(id) %>%
+  summarise(
+    n_categories = n_distinct(category),
+    categories = paste(sort(unique(category)), collapse = ", "),
+    n_prizes = n(),
+    .groups = "drop"
+  ) %>%
+  filter(n_categories > 1)
+
+multi_category_named <- multi_category_laureates %>%
+  left_join(
+    laureates_clean %>% select(id, fullName),
+    by = "id"
+  )
+
+ggplot(multi_category_named,
+       aes(x = fullName, y = n_categories)) +
+  geom_point(size = 4, color = "darkorange") +
+  geom_segment(aes(x = fullName, xend = fullName,
+                   y = 1, yend = n_categories),
+               color = "gray70") +
+  geom_text(
+    aes(label = categories),
+    vjust = -0.5,
+    size = 3
+  ) +
+  labs(
+    title = "Nobel Laureates with Prizes in Multiple Categories",
+    x = "Laureate",
+    y = "Number of Categories Awarded"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 20, hjust = 1),
+    plot.title = element_text(face = "bold")
+  )
+```
+
+# Conclusion
+
+This analysis used Nobel Prize API data to explore patterns in laureates’ demographics, award distribution, and geographic mobility. The results show clear temporal trends in prize distribution, meaningful variation in age across categories, and a strong difference between birth country and affiliation country, highlighting global mobility of researchers toward major research hubs. Finally, the analysis confirms that Nobel laureates receiving awards in multiple categories are extremely rare, emphasizing the highly specialized nature of Nobel Prize recognition.
+
+# References
+
+1.  OpenAI. (2026). ChatGPT (GPT-5.3) responses on Nobel Prize JSON data analysis, data cleaning, visualization, and R programming support \[Large language model\]. https://chat.openai.com/
